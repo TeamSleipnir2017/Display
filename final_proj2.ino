@@ -1,179 +1,124 @@
-..
+
 #include <avr/io.h>
 #include <avr/interrupt.h>
-#include <util/delay.h>
-#define HC595_PORT   PORTD
-#define HC595_DDR    DDRD
 
-#define HC595_DS_POS PB3    //Data pin (DS) pin location
+#include <LiquidCrystal.h> // This allows us to see the RPM values displayed on 
+//the screen since the programming of the LCD Library was not completed
 
-#define HC595_SH_CP_POS PB5      //Shift Clock (SH_CP) pin location
-#define HC595_ST_CP_POS PB4      //Store Clock (ST_CP) pin location
+//Define for shift register
 
-void Init();
-void Pulse();
-void Latch();
-void Wait();
-void Write(uint8_t data);
+#define Clock_PORT   PORTB //Shift and Store clock connected to PORTB
+#define Clock_DDR    DDRB
 
-#include <LiquidCrystal.h>
-LiquidCrystal lcd(8,9,10,11,12,13);
+#define Data_PORT PORTD //Data pin connected to PORTD
+#define Data_DDR DDRD
 
-//#include "delay.h"
-//#include "led.h"
-//#include "timer.h"
-//#include "shift_register.h"
+#define SH_CP PB4      //Shift Clock (SH_CP)  
+#define ST_CP PB5      //Store Clock (ST_CP)
+#define Data PD3   //Data pin (DS)
 
-#define PIN_7 0x80
-#define LEDDIR DDRD
-#define LEDPORT PORTD
+// Define LCD:
+LiquidCrystal lcd(9, 8, 7, 6, 5, 4);
+
+//Define LED
+#define PIN_10 0x04
+#define LEDDIR DDRB
+#define LEDPORT PORTB
 
 
-volatile int count=0;
-volatile int signal_length = 0;
+volatile int count = 0; // Counter used to measure signal length
+volatile int signal_length = 0; //Variable that stores value of signal length
+long int RPM_value = 0; // Variable that stores value of RPM
 
-long int RPM_value=0;
+//Function defenitions
 
-void LedOn(int pin);
-void LedOff(int pin);
-void LedInit(int pin);
-void interrupt_innit();
-int RPM();
-void timer0_setup();
+//Shift Register
+void SRInit(); // Function that Initializes Shiftregister (SR)
+void Pulse(); // Function that pulses Shift Clock
+void Latch(); // Function that pulses Store Clock
+void Write(uint8_t data); // Function that sends binary data to SR
 
-ISR(INT0_vect) {
-    signal_length=count;
-    count=0;
-         }
+//LED
+void LedInit(); //Initialize LED
+void LedOn(); // Turn LED on
+void LedOff(); // Turn LED off
+void display_lights(); // Control LEDs to show optimal gear shifting
 
-ISR(TIMER0_COMPA_vect){//timer0 interrupt
-// do something
-  //LedOn(13);
-  count++;
-}
+//Signal measurements
+void InterruptInit(); // Initialize interrupt INT0
+void Timer0Init(); // Initialize timer0
+void RPM(); // Calculate RPM
 
-int main(){
-  lcd.begin(16, 2);
-  lcd.clear();
-  //lcd.print("RPM:");
-  
-  timer0_setup();
-  interrupt_innit();
-     uint8_t led_pattern[9]={
-                          0b00000000,
-                          0b00000001,
-                          0b00000011,
-                          0b00000111,
-                          0b00001111,
-                          0b00011111,
-                          0b00111111,
-                          0b01111111,
-                          0b11111111,
-                       };
+//LCD
+void print_RPM();
+void LCDInit();
 
-     //Initialize HC595 system
-    Init();
-    // Initialize Led
-    LEDDIR|=PIN_7; 
-   int data=0;
-   int led=0;
 
-  while(1){
+//
+int main() {
+
+  //Initialize LCD
+  LCDInit();
+
+  //Initialize TIMER0
+  Timer0Init();
+
+  //Initialize INT0
+  InterruptInit();
+
+  //Initialize HC595 system
+  SRInit();
+
+  // Initialize Led
+  LedInit();
+
+
+
+  while (1) {
+    //Calculates RPM from signal
     RPM();
-    //round to nearest 100
-    RPM_value =(RPM_value + 50) / 100 * 100;
-    
-    //Wait();
-    //Setting blue lights
-
-        if (RPM_value>12000){
-          data=8;
-          led=1;
-          lcd.setCursor(1,6);
-        }
-        else if (RPM_value>11000){
-          data=7;
-          led=1;
-          lcd.setCursor(1,6);
-            }
-        else if (RPM_value>=10000){
-          data=6;
-          led=1;
-          lcd.setCursor(1,6);
-            }
-        //Setting yellow lights
-        else if (RPM_value>8334){
-         data=5;
-         led=1;
-         
-         lcd.setCursor(2,6);
-        }
-        else if (RPM_value>6667){
-        data=4;
-        led=1;
-        lcd.clear();
-        lcd.setCursor(2,6);
-        }
-        else if(RPM_value>5000){
-         data=3;
-         led=1;
-         lcd.clear();
-         lcd.setCursor(2,6);
-        }
-        //Setting red lights
-        else if (RPM_value>3334){
-         data=2;
-         led=1;
-         lcd.clear();
-         lcd.setCursor(2,6);
-        }
-        else if  (RPM_value>1667){
-        data=1;
-        led=1;
-        lcd.clear();
-        lcd.setCursor(2,6);
-        }
-        else {
-         data=0;
-         led=0;
-         lcd.clear();
-         lcd.setCursor(2,6);
-        }
-
-     Write(led_pattern[data]);
-     if(led){
-      LEDPORT |=PIN_7;
-     }
-     else{
-      LEDPORT&=~PIN_7;
-     }
-  lcd.print("RPM:");
-  lcd.print(RPM_value);  
+    //Turn on LEDs for gearshifting
+    display_lights();
+    //Display RPM on screen
+    print_RPM();
   }
   return 0;
 }
+/***************************************
+  Interrupt and timer functions
 
+****************************************/
 
-void interrupt_innit() {
+// External interrupt INT0
+ISR(INT0_vect) {
+  signal_length = count; //
+  count = 0; // reset timer
+}
+
+//timer0 interrupt
+ISR(TIMER0_COMPA_vect) {
+  count++; // Measure time between signals
+}
+
+void InterruptInit() {
   cli();
-  // attachInterrupt(0, rising, RISING); in setup
-   DDRD &= ~(1 << DDD2);     // Clear the PD2 pin
-      // PD2 (INT0 pin) is now an input
 
-      EICRA |= ((1 << ISC00)| (1 << ISC01)); // set INT0 to trigger on rising edge
-      EIMSK |= (1 << INT0);     // Turns on INT0
+  DDRD &= ~(1 << DDD2);     // Clear the PD2 pin
+  // PD2 (INT0 pin) is now an input
+
+  EICRA |= ((1 << ISC00) | (1 << ISC01)); // set INT0 to trigger on rising edge
+  EIMSK |= (1 << INT0);     // Turns on INT0
 
   sei();    // enable global interrupt
 }
 
-int RPM() {
-  RPM_value=42*60000/(signal_length);
-  return RPM_value;
+void RPM() {
+  RPM_value = 42 * 60000 / (signal_length);
 }
 
 
-void timer0_setup(){
-cli();//stop interrupts
+void Timer0Init() {
+  cli();//stop interrupts
 
 
   TCCR0A = 0;// set entire TCCR0A register to 0
@@ -181,11 +126,11 @@ cli();//stop interrupts
   TCNT0  = 0;//initialize counter value to 0
 
   TCCR0A |= (1 << WGM01);
-  // Set CS01 and CS00 bits for 64 prescaler. 16Mhz/64 = 250 kHz => 4µs
+  // Set CS01 and CS00 bits for 64 prescaler. 16Mhz/64 =  //250 kHz => 4us
   TCCR0B |= (1 << CS01) | (1 << CS00);
   // enable timer compare interrupt
 
-  OCR0A = 11;// set compare value 12*4µs=0.048ms
+  OCR0A = 11;// set compare value 12*4us=0.048ms
 
   //enable timer compare interrupt
   TIMSK0 |= (1 << OCIE0A);
@@ -194,116 +139,221 @@ cli();//stop interrupts
 }
 
 
+/***************************************
+
+  Shift Register functions
+
+****************************************/
+#define DataHigh() (Data_PORT|=(1<<Data)) // Set data port high
+
+#define DataLow() (Data_PORT&=(~(1<<Data))) // Set data port low
 
 
+void SRInit()
+{
+
+  Clock_DDR |= ((1 << SH_CP) | (1 << ST_CP)); //Make Shift clock (SH_CP) and Store Clock (ST_CP) lines output
+
+  Data_DDR |= (1 << Data); //Make the Data(DS) line output
+}
+
+
+void Pulse()
+{
+  //Pulse the Shift Clock
+
+  Clock_PORT |= (1 << SH_CP); //HIGH
+
+  Clock_PORT &= ~(1 << SH_CP); //LOW
+
+}
+
+
+void Latch()
+{
+  //Pulse the Store Clock
+
+  Clock_PORT |= (1 << ST_CP); //HIGH
+  Delay_us(1);
+
+  Clock_PORT &= ~(1 << ST_CP); //LOW
+  Delay_us(1);
+}
+
+
+
+void Write(uint8_t data)
+{
+  //Send 8 bit binary sequence
+
+  //Start with MSB
+  for (uint8_t i = 0; i < 8; i++)
+  {
+
+    if (data & 0b10000000) // if MSB is 1 then the output should be high
+    {
+
+      DataHigh(); // HIGH
+    }
+
+    else  // if MSB is 0 then the ouput is low
+    {
+
+      DataLow(); // LOW
+    }
+
+    Pulse();  //Pulse the Clock line
+    data = data << 1; //Shift data so next bit is in MSB position
+
+  }
+
+  //All bits have been shifted in
+
+  Latch(); // Pulse the Store Clock line
+}
 
 /***************************************
 
-Configure Connections
+  Delay functions
 
 ****************************************/
 
+void Delay_ms(unsigned int millisek) {
+  unsigned volatile long Max, Count;
+  Max = 380 * millisek;
+  Count = 0;
+  while (Count != Max) {
+    Count++;
+  }
+}
+void Delay_us(unsigned int microsek) {
+  unsigned volatile long Max, Count;
+  Max = 0.38 * microsek;
+  Count = 0;
+  while (Count != Max) {
+    Count++;
+  }
+}
+/***************************************
 
+  LED
 
-//Initialize HC595 System
-
-void Init()
+****************************************/
+void LedOn()
 {
-   //Make the Data(DS), Shift clock (SH_CP), Store Clock (ST_CP) lines output
-   HC595_DDR|=((1<<HC595_SH_CP_POS)|(1<<HC595_ST_CP_POS)|(1<<HC595_DS_POS));
+  LEDPORT |= PIN_10;
 }
 
-
-//Low level macros to change data (DS)lines
-#define DataHigh() (HC595_PORT|=(1<<HC595_DS_POS))
-
-#define DataLow() (HC595_PORT&=(~(1<<HC595_DS_POS)))
-
-//Sends a clock pulse on SH_CP line
-void Pulse()
+void LedOff()
 {
-   //Pulse the Shift Clock
-
-   HC595_PORT|=(1<<HC595_SH_CP_POS);//HIGH
-
-   HC595_PORT&=(~(1<<HC595_SH_CP_POS));//LOW
-
+  LEDPORT &= ~PIN_10;
 }
 
-//Sends a clock pulse on ST_CP line
-void Latch()
+void LedInit()
 {
-   //Pulse the Store Clock
-
-   HC595_PORT|=(1<<HC595_ST_CP_POS);//HIGH
-   _delay_loop_1(1);
-
-   HC595_PORT&=(~(1<<HC595_ST_CP_POS));//LOW
-   _delay_loop_1(1);
+  LEDDIR |= PIN_10;
 }
 
+void display_lights() {
+  // Variable that keeps value 0/1 if Led connected to pin 10 is off/on
+  int led = 0;
 
-/*
 
-Main High level function to write a single byte to
-Output shift register 74HC595.
+  //Variable that keeps value of indices of led_pattern array displayed by the LEDs
+  uint8_t pattern;
 
-Arguments:
-   single byte to write to the 74HC595 IC
+  // Turns LEDs on and off depending on binary value 0=off, 1=off.
+  // Each value references an LED connected to a different output of the shift register
+  //(Q7, Q6, Q5, Q4, Q3, Q2, Q1, Q0)
+  uint8_t led_pattern[9] = {
+    0b00000000,
+    0b00000010,
+    0b00000110,
+    0b00001110,
+    0b00011110,
+    0b00111110,
+    0b01111110,
+    0b11111110,
+    0b11111111,
+  };
 
-Returns:
-   NONE
+  //round to nearest 100
+  RPM_value = (RPM_value + 50) / 100 * 100;
 
-Description:
-   The byte is serially transfered to 74HC595
-   and then latched. The byte is then available on
-   output line Q0 to Q7 of the HC595 IC.
+  //Setting blue lights (Q0,Q7,Q6)
+  if (RPM_value >= 9000) {
+    pattern = 8;
+    led = 1;
+  }
+  else if (RPM_value >= 8500) {
+    pattern = 7;
+    led = 1;
+  }
+  else if (RPM_value >= 8000) {
+    pattern = 6;
+    led = 1;
+  }
+  //Setting yellow lights (Q6,Q5,Q4)
+  else if (RPM_value >= 7500) {
+    pattern = 5;
+    led = 1;
+  }
+  else if (RPM_value >= 7000) {
+    pattern = 4;
+    led = 1;
+  }
+  else if (RPM_value >= 6500) {
+    pattern = 3;
+    led = 1;
+  }
+  //Setting red lights (Q2,Q1 and LED connected to pin10)
+  else if (RPM_value >= 6000) {
+    pattern = 2;
+    led = 1;
+  }
+  else if  (RPM_value >= 5500) {
+    pattern = 1;
+    led = 1;
+  }
+  else if  (RPM_value >= 5000) {
+    pattern = 0;
+    led = 1;
+  }
+  else {
+    pattern = 0;
+    led = 0;
+  }
+  Write(led_pattern[pattern]);
+  if (led) {
+    LedOn();
+  }
+  else {
+    LedOff();
+  }
 
-*/
-void Write(uint8_t data)
-{
-   //Send each 8 bits serially
+}
+/***************************************
 
-   //Order is MSB first
-   for(uint8_t i=0;i<8;i++)
-   {
-      //Output the data on DS line according to the
-      //Value of MSB
-      if(data & 0b10000000)
-      {
-         //MSB is 1 so output high
+  LCD
 
-         DataHigh();
-      }
-      else
-      {
-         //MSB is 0 so output high
-         DataLow();
-      }
+****************************************/
+void print_RPM() {
 
-      Pulse();  //Pulse the Clock line
-      data=data<<1;  //Now bring next bit at MSB position
+  if (RPM_value >= 10000) {
+    lcd.setCursor(1, 6);
+  }
+  else {
+    lcd.clear(); //  Clears the first digit from a number previously displayed that was higher than 10 000
+    lcd.setCursor(2, 6);
+  }
 
-   }
-
-   //Now all 8 bits have been transferred to shift register
-   //Move them to output latch at one
-   Latch();
+  lcd.print("RPM:");
+  lcd.print(RPM_value);
+  Delay_ms(10);  // Keeps the LCD screen from flickering
 }
 
-/*
-
-Simple Delay function approx 0.5 seconds
-
-*/
-
-void Wait()
-{
-   for(uint8_t i=0;i<30;i++)
-   {
-      _delay_loop_2(0);
-   }
+void LCDInit() {
+  lcd.begin(16, 2);
+  lcd.clear();
 }
-
-
 
